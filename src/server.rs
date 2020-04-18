@@ -9,13 +9,27 @@ use std::collections::{VecDeque, HashMap};
 
 type ResourceRequirements = HashMap<Resource, usize>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CommandPart {
     program: String,
     arguments: Vec<String>,
 }
 
 impl CommandPart {
+    fn new(program: &str) -> Self {
+        CommandPart {
+            program: program.to_string(),
+            arguments: vec![],
+        }
+    }
+
+    fn args(&self, arguments: &Vec<String>) -> Self {
+        CommandPart {
+            program: self.program.clone(),
+            arguments: arguments.clone(),
+        }
+    }
+
     fn to_command(&self) -> Command {
         let mut com = Command::new(&self.program);
         com.args(&self.arguments);
@@ -23,7 +37,7 @@ impl CommandPart {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Task {
     return_code: Option<i32>,
     requirements: ResourceRequirements,
@@ -72,7 +86,8 @@ impl TaskQueue {
         self.waiting.push(Task::new(command_part, priority, requirements));
     }
     fn dequeue_with_constraints(&mut self, consumer: &Consumer) -> Task {
-        self.waiting[0].clone()
+        let r = self.waiting.remove(0);
+        r
     }
 
     fn next_default_priority(&self) -> i64 {
@@ -80,7 +95,7 @@ impl TaskQueue {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
 enum Resource {
     GPU,
     CPU,
@@ -107,10 +122,11 @@ impl Consumer {
         loop {
             let task = task_queue.write().unwrap().dequeue_with_constraints(self);
             let mut command = task.command_part.to_command();
+            println!("start: {} {}", task.command_part.program, task.command_part.arguments.join(" "));
             let status = command.status().await.expect("fail child command");
 
             let task = task.with_return_code(status.code().unwrap());
-            task_queue.write().unwrap().waiting.push(task);
+            task_queue.write().unwrap().finished.push(task);
         }
     }
 }
@@ -133,6 +149,15 @@ async fn main() {
         consumers: Arc::new(RwLock::new(vec![Consumer::default()])),
         task_queue: Arc::new(RwLock::new(TaskQueue::default())),
     };
+
+    for i in 1..5 {
+
+        tsp.task_queue.write().unwrap().enqueue(
+            CommandPart::new("sleep").args(&vec![i.to_string()]),
+            None,
+            None,
+        );
+    }
 
     tsp.run().await;
 }
