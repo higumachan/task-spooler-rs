@@ -108,7 +108,9 @@ impl TaskQueue {
         id
     }
     fn dequeue_with_constraints(&mut self, consumer: &Consumer) -> Option<Task> {
-        let target_index = self.waiting.iter().enumerate().filter(|(_, task)| { task.requirements.is_satisfy(&consumer.resources) }).next()?.0;
+        let mut waiting_with_index: Vec<(usize, &Task)> = self.waiting.iter().enumerate().collect();  // TODO(higumachan): いつか直す
+        waiting_with_index.sort_by_key(|(_, v)| -v.priority);
+        let target_index = waiting_with_index.iter().filter(|(_, task)| { task.requirements.is_satisfy(&consumer.resources) }).next()?.0;
         let r = self.waiting.remove(target_index);
         Some(r)
     }
@@ -225,5 +227,22 @@ mod tests {
         assert_eq!(dq_task.id, task2_id);
         let dq_task = tq.clone().dequeue_with_constraints(&consumer_with_gpu).unwrap();
         assert_eq!(dq_task.id, task1_id);
+    }
+
+    #[test]
+    fn test_dequeue_with_priority() {
+        let consumer = Consumer::default();
+
+        let mut tq = TaskQueue::default();
+        let task1_id = tq.enqueue(CommandPart::default(), Some(1), None);
+        let task2_id = tq.enqueue(CommandPart::default(), Some(10), None);
+        let task3_id = tq.enqueue(CommandPart::default(), Some(1), None);
+
+        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        assert_eq!(dq_task.id, task2_id);
+        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        assert_eq!(dq_task.id, task1_id);
+        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        assert_eq!(dq_task.id, task3_id);
     }
 }
