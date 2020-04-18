@@ -7,7 +7,19 @@ use std::sync::{Arc};
 use std::collections::{VecDeque, HashMap};
 
 
-type ResourceRequirements = HashMap<Resource, usize>;
+type Resources = HashMap<ResourceType, Vec<usize>>;
+type ResourceRequirements = HashMap<ResourceType, usize>;
+
+trait ResourceRequirementsExt {
+    fn is_satisfy(&self, resources: &Resources) -> bool;
+}
+
+impl ResourceRequirementsExt for ResourceRequirements {
+    fn is_satisfy(&self, resources: &Resources) -> bool {
+        self.iter()
+            .all(|(k, v)| { resources.get(k).map_or(0usize, |x| x.len()) >= *v })
+    }
+}
 
 #[derive(Clone, Debug)]
 struct CommandPart {
@@ -39,6 +51,7 @@ impl CommandPart {
 
 #[derive(Clone, Debug)]
 struct Task {
+    id: usize,
     return_code: Option<i32>,
     requirements: ResourceRequirements,
     priority: i64,
@@ -46,8 +59,9 @@ struct Task {
 }
 
 impl Task {
-    fn new(command_part: CommandPart, priority: i64, requirements: ResourceRequirements) -> Self {
+    fn new(id: usize, command_part: CommandPart, priority: i64, requirements: ResourceRequirements) -> Self {
         Self {
+            id,
             return_code: Option::None,
             requirements,
             priority,
@@ -56,6 +70,7 @@ impl Task {
     }
     fn with_return_code(&self, return_code: i32) -> Self {
         Self {
+            id: self.id,
             return_code: Some(return_code),
             priority: self.priority,
             command_part: self.command_part.clone(),
@@ -64,9 +79,12 @@ impl Task {
     }
 }
 
+
+#[derive(Clone)]
 struct TaskQueue {
     waiting: Vec<Task>,
     finished: Vec<Task>,
+    next_task_id: usize,
 }
 
 impl Default for TaskQueue {
@@ -74,42 +92,53 @@ impl Default for TaskQueue {
         TaskQueue {
             waiting: vec![],
             finished: vec![],
+            next_task_id: 0,
         }
     }
 }
 
 impl TaskQueue {
-    fn enqueue(&mut self, command_part: CommandPart, priority: Option<i64>, requirements: Option<ResourceRequirements>) {
+    fn enqueue(&mut self, command_part: CommandPart, priority: Option<i64>, requirements: Option<ResourceRequirements>) -> usize {
         let priority = priority.unwrap_or(self.next_default_priority());
         let requirements = requirements.unwrap_or(HashMap::new());
 
-        self.waiting.push(Task::new(command_part, priority, requirements));
+        let id = self.allocate_task_id();
+        let task = Task::new(id, command_part, priority, requirements);
+        self.waiting.push(task);
+        id
     }
-    fn dequeue_with_constraints(&mut self, consumer: &Consumer) -> Task {
-        let r = self.waiting.remove(0);
-        r
+    fn dequeue_with_constraints(&mut self, consumer: &Consumer) -> Option<Task> {
+        let target_index = self.waiting.iter().enumerate().filter(|(_, task)| { task.requirements.is_satisfy(&consumer.resources) }).next()?.0;
+        let r = self.waiting.remove(target_index);
+        Some(r)
     }
 
     fn next_default_priority(&self) -> i64 {
         0
     }
+
+    fn allocate_task_id(&mut self) -> usize {
+        let r = self.next_task_id;
+        self.next_task_id += 1;
+        r
+    }
 }
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
-enum Resource {
+enum ResourceType {
     GPU,
     CPU,
 }
 
 struct Consumer {
-    resources: HashMap<Resource, Vec<usize>>,
+    resources: HashMap<ResourceType, Vec<usize>>,
 }
 
 impl Default for Consumer {
     fn default() -> Self {
         let mut resources = HashMap::new();
 
-        resources.insert(Resource::CPU, vec![0]);
+        resources.insert(ResourceType::CPU, vec![0]);
 
         Self {
             resources,
@@ -120,13 +149,21 @@ impl Default for Consumer {
 impl Consumer {
     async fn consume(&self, task_queue: &Arc<RwLock<TaskQueue>>) {
         loop {
-            let task = task_queue.write().unwrap().dequeue_with_constraints(self);
+            let task = task_queue.write().unwrap().dequeue_with_constraints(self).unwrap();
             let mut command = task.command_part.to_command();
             println!("start: {} {}", task.command_part.program, task.command_part.arguments.join(" "));
             let status = command.status().await.expect("fail child command");
 
             let task = task.with_return_code(status.code().unwrap());
             task_queue.write().unwrap().finished.push(task);
+        }
+    }
+
+    fn with_resource(&self, resource_type: ResourceType, amount: Vec<usize>) -> Self {
+        let mut resources = self.resources.clone();
+        resources.insert(resource_type, amount);
+        Self {
+            resources
         }
     }
 }
@@ -160,4 +197,33 @@ async fn main() {
     }
 
     tsp.run().await;
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl Default for CommandPart {
+        fn default() -> Self {
+            CommandPart::new("ls")
+        }
+    }
+
+    #[test]
+    fn test_dequeue_with_constraints() {
+        let consumer = Consumer::default();
+        let consumer_with_gpu = Consumer::default().with_resource(ResourceType::GPU, vec![0]);
+
+        let mut tq = TaskQueue::default();
+        let task1_id = tq.enqueue(CommandPart::default(), None, Some([
+            (ResourceType::GPU, 1),
+        ].iter().cloned().collect()));
+        let task2_id = tq.enqueue(CommandPart::default(), None, None);
+
+        let dq_task = tq.clone().dequeue_with_constraints(&consumer).unwrap();
+        assert_eq!(dq_task.id, task2_id);
+        let dq_task = tq.clone().dequeue_with_constraints(&consumer_with_gpu).unwrap();
+        assert_eq!(dq_task.id, task1_id);
+    }
 }
