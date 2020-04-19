@@ -8,7 +8,6 @@ pub enum RequestType {
     ShowQueue(),
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

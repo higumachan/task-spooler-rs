@@ -9,12 +9,13 @@ use std::collections::{VecDeque, HashMap};
 mod task_spooler;
 use task_spooler::{TaskSpooler, Consumer, TaskQueue, CommandPart};
 
-mod connection;
+mod connections;
 
 #[tokio::main]
 async fn main() {
     let tsp = TaskSpooler::default();
 
+    /*
     for i in 1..5 {
 
         tsp.task_queue.write().unwrap().enqueue(
@@ -23,11 +24,13 @@ async fn main() {
             None,
         );
     }
+    */
 
-    tsp.run().await;
+    println!("start server");
+    tokio::join!(tsp.run(), server_loop("127.0.0.1", 7135));
 }
 
-async fn server_loop(addr: &str, port: u16) {
+async fn server_loop(addr: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::bind(format!("{}:{}", addr, port)).await?;
 
     loop {
@@ -47,12 +50,8 @@ async fn server_loop(addr: &str, port: u16) {
                         return;
                     }
                 };
-
-                // Write the data back
-                if let Err(e) = socket.write_all(&buf[0..n]).await {
-                    eprintln!("failed to write to socket; err = {:?}", e);
-                    return;
-                }
+                let r: connections::types::RequestType = bincode::deserialize(&buf[0..n]).unwrap();
+                println!("got {:?}", r);
             }
         });
     }
