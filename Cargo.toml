@@ -1,0 +1,29 @@
+[package]
+name = "task-spooler-rs"
+version = "0.1.0"
+authors = ["higumachan <harekumo792154@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/main.rs"
+
+[dependencies]
+tonic        = "0.2.0"
+bytes        = "0.4"
+prost        = "0.5"
+prost-derive = "0.5"
+tokio = { version = "0.2", features = ["full"] }
+futures = "0.3"
+argparse = "0.2.2"
+bincode = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[build-dependencies]
+tonic-build  = "0.2.0"
