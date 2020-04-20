@@ -180,7 +180,6 @@ impl Consumer {
             let mut run_task = task.clone().unwrap();
             self_.write().unwrap().processing = task;
             run_task.run().await.expect("fail child command");
-            // println!("finish: {} {}", task.command_part.program, task.command_part.arguments.join(" "));
             task_queue.write().unwrap().finished.push(run_task);
             self_.write().unwrap().processing = None;
         }
@@ -325,14 +324,15 @@ mod tests {
         let mut tsp = TaskSpooler::default();
 
         assert_eq!(tsp.task_list().len(), 0);
-        {
-            tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(1), None, None);
-        }
-        assert_eq!(tsp.task_list().len(), 1);
+        let task1_id = tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(1), None, None);
+        let task2_id = tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(10), None, None);
+        assert_eq!(tsp.task_list().len(), 2);
+        assert_eq!(tsp.task_list()[0].id, task1_id);
+        assert_eq!(tsp.task_list()[1].id, task2_id);
 
-        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
+        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 2);
         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
-        assert_eq!(tsp.task_list().len(), 1);
+        assert_eq!(tsp.task_list().len(), 2);
 
         let mut delay1 = delay_for(Duration::from_millis(500));
         let mut delay2 = delay_for(Duration::from_millis(1500));
@@ -344,9 +344,11 @@ mod tests {
             tokio::select! {
                 _ = &mut delay1 => {
                     d1.call_once(|| {
-                        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 0);
+                        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
                         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
-                        assert_eq!(tsp.task_list().len(), 1);
+                        assert_eq!(tsp.task_list().len(), 2);
+                        assert_eq!(tsp.task_list()[0].id, task1_id);
+                        assert_eq!(tsp.task_list()[1].id, task2_id);
                     })
                 }
                 _ = &mut f => {
@@ -354,7 +356,9 @@ mod tests {
                 _ = &mut delay2 => {
                     assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 0);
                     assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 1);
-                    assert_eq!(tsp.task_list().len(), 1);
+                    assert_eq!(tsp.task_list().len(), 2);
+                    assert_eq!(tsp.task_list()[0].id, task2_id);
+                    assert_eq!(tsp.task_list()[1].id, task1_id);
                     break;
                 }
             }
