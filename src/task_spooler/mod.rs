@@ -8,6 +8,7 @@ use tokio::time::{delay_for};
 use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::io::Write;
+use serde::export::Formatter;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -28,6 +29,12 @@ impl ResourceRequirementsExt for ResourceRequirements {
 pub struct CommandPart {
     program: String,
     arguments: Vec<String>,
+}
+
+impl std::fmt::Display for CommandPart {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.program, self.arguments.join(" "))
+    }
 }
 
 impl CommandPart {
@@ -52,14 +59,14 @@ impl CommandPart {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
-    id: usize,
-    return_code: Option<i32>,
-    requirements: ResourceRequirements,
-    priority: i64,
-    command_part: CommandPart,
-    output_filepath: Option<PathBuf>,
+    pub id: usize,
+    pub return_code: Option<i32>,
+    pub requirements: ResourceRequirements,
+    pub priority: i64,
+    pub command_part: CommandPart,
+    pub output_filepath: Option<PathBuf>,
 }
 
 impl Task {

@@ -3,16 +3,18 @@ use tokio::net::TcpStream;
 use tokio::prelude::*;
 use argparse::{ArgumentParser, List, Store};
 use std::io::{stdout, stderr};
-use crate::task_spooler::CommandPart;
+use crate::task_spooler::{CommandPart, Task};
+use crate::connections::types::RequestType;
 
-mod task_spooler;
-mod connections;
+pub mod task_spooler;
+pub mod connections;
 
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
 enum Command {
     enqueue,
+    show_queue,
 }
 
 impl FromStr for Command {
@@ -20,6 +22,7 @@ impl FromStr for Command {
     fn from_str(src: &str) -> Result<Command, ()> {
         return match src {
             "enqueue" => Ok(Command::enqueue),
+            "show" => Ok(Command::show_queue),
             _ => Err(()),
         };
     }
@@ -42,9 +45,10 @@ async fn main() {
         ap.parse_args_or_exit();
     }
 
-    (match subcommand {
-        Command::enqueue => enqueue_command(args),
-    }).await;
+    match subcommand {
+        Command::enqueue => enqueue_command(args).await,
+        Command::show_queue => show_queue_command(args).await,
+    };
 }
 
 async fn enqueue_command(mut args: Vec<String>) {
@@ -73,4 +77,33 @@ async fn enqueue_command(mut args: Vec<String>) {
     let bytes = bincode::serialize(&request).unwrap();
     let mut stream = TcpStream::connect("127.0.0.1:7135").await.expect("connection fail");
     stream.write(&bytes).await.unwrap();
+}
+
+async fn show_queue_command(mut args: Vec<String>) {
+    let bytes = bincode::serialize(&RequestType::ShowQueue()).unwrap();
+    let mut stream = TcpStream::connect("127.0.0.1:7135").await.expect("connection fail");
+    stream.write(&bytes).await.unwrap();
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).await.unwrap();
+    let tasklist: Vec<Task> = bincode::deserialize(&buf[0..n]).unwrap();
+
+    println!("id\tcommand          \trequirements\toutput");
+    for task in tasklist {
+        let command = format!("{}", task.command_part);
+        let command = truncate_string(&command, 16).unwrap();
+        println!("{}\t{:<12}\t{}\t{}", task.id, command, "", "");
+    };
+}
+
+fn truncate_string(s: &str, width: usize) -> Option<String> {
+    if width <= 3 {
+        return None;
+    }
+    let real_width = width - 3;
+
+    let mut res = s[0..std::cmp::min(real_width, s.len())].to_string();
+    if real_width < s.len() {
+        res.extend("...".chars());
+    }
+    Some(res)
 }

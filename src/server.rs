@@ -57,6 +57,9 @@ async fn server_loop(addr: String, port: u16) -> Result<(), Box<dyn std::error::
                     connections::types::RequestType::Enqueue(command_part, priority, resource_requirements) => {
                         task_spooler.task_queue.write().unwrap().enqueue(command_part, priority, resource_requirements);
                     }
+                    connections::types::RequestType::ShowQueue() => {
+                        socket.write_all(&bincode::serialize(&task_spooler.task_list()).unwrap()).await;
+                    }
                     _ => {
                         panic!("unknown request");
                     }
