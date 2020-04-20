@@ -25,6 +25,7 @@ impl ResourceRequirementsExt for ResourceRequirements {
     }
 }
 
+
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct CommandPart {
     program: String,
@@ -156,6 +157,15 @@ impl TaskQueue {
 pub enum ResourceType {
     GPU,
     CPU,
+}
+
+impl std::fmt::Display for ResourceType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            GPU => "gpu",
+            CPU => "cpu",
+        })
+    }
 }
 
 pub struct Consumer {

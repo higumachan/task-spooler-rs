@@ -3,7 +3,7 @@ use tokio::net::TcpStream;
 use tokio::prelude::*;
 use argparse::{ArgumentParser, List, Store};
 use std::io::{stdout, stderr};
-use crate::task_spooler::{CommandPart, Task};
+use crate::task_spooler::{CommandPart, Task, ResourceRequirements};
 use crate::connections::types::RequestType;
 
 pub mod task_spooler;
@@ -91,7 +91,7 @@ async fn show_queue_command(mut args: Vec<String>) {
     for task in tasklist {
         let command = format!("{}", task.command_part);
         let command = truncate_string(&command, 16).unwrap();
-        println!("{}\t{:<12}\t{}\t{}", task.id, command, "", "");
+        println!("{}\t{:<12}\t{}\t{}", task.id, command, format_resource(&task.requirements), "");
     };
 }
 
@@ -106,4 +106,12 @@ fn truncate_string(s: &str, width: usize) -> Option<String> {
         res.extend("...".chars());
     }
     Some(res)
+}
+
+fn format_resource(requirements: &ResourceRequirements) -> String {
+    let mut res = String::new();
+    for (k, v) in requirements {
+        res.extend(format!("{}:{} ", k, v).chars());
+    }
+    res
 }
