@@ -3,7 +3,7 @@ use tokio::net::TcpStream;
 use tokio::prelude::*;
 use argparse::{ArgumentParser, List, Store};
 use std::io::{stdout, stderr};
-use crate::task_spooler::{CommandPart, Task, ResourceRequirements};
+use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType};
 use crate::connections::types::RequestType;
 
 pub mod task_spooler;
@@ -55,9 +55,11 @@ async fn enqueue_command(mut args: Vec<String>) {
     args.insert(0, "enqueue".to_string());
     let mut program = "".to_string();
     let mut program_args = vec!();
+    let mut requires: Vec<String> = vec!();
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("enqueue task");
+        ap.refer(&mut requires).add_option(&["--require", "-r"], List, "TODO");
         ap.refer(&mut program).required().add_argument("program", Store, "TODO");
         ap.refer(&mut program_args).add_argument("program_arguments", List, "TODO");
         match ap.parse(args, &mut stdout(), &mut stderr()) {
@@ -67,11 +69,15 @@ async fn enqueue_command(mut args: Vec<String>) {
             }
         }
     }
+    let requires = requires.iter().map(|x| {
+        let ts: Vec<_> = x.split(":").collect();
+        (ResourceType::from_str(&ts[0]).unwrap(), usize::from_str(ts[1]).unwrap())
+    }).collect::<ResourceRequirements>();
 
     let request = connections::types::RequestType::Enqueue(
         CommandPart::new(program.as_str()).args(&program_args),
         None,
-        None
+        Some(requires),
     );
 
     let bytes = bincode::serialize(&request).unwrap();
@@ -85,13 +91,13 @@ async fn show_queue_command(mut args: Vec<String>) {
     stream.write(&bytes).await.unwrap();
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();
-    let tasklist: Vec<Task> = bincode::deserialize(&buf[0..n]).unwrap();
+    let tasklist: Vec<(TaskStatus, Task)> = bincode::deserialize(&buf[0..n]).unwrap();
 
-    println!("id\tcommand          \trequirements\toutput");
-    for task in tasklist {
+    println!("id\tstatus    \tcommand          \trequirements\toutput");
+    for (status, task) in tasklist {
         let command = format!("{}", task.command_part);
         let command = truncate_string(&command, 16).unwrap();
-        println!("{}\t{:<12}\t{}\t{}", task.id, command, format_resource(&task.requirements), "");
+        println!("{}\t{: ^10}\t{: <12}\t{}\t{}", task.id, status, command, format_resource(&task.requirements), "");
     };
 }
 

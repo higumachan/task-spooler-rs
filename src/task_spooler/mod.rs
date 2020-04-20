@@ -11,6 +11,7 @@ use std::io::Write;
 use serde::export::Formatter;
 use std::str::FromStr;
 use std::string::ParseError;
+use strum_macros::{Display, EnumString};
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -158,33 +159,12 @@ impl TaskQueue {
 #[derive(Debug)]
 pub struct ResourceTypeParseError;
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize, EnumString, Display)]
 pub enum ResourceType {
     GPU,
     CPU,
 }
 
-impl FromStr for ResourceType {
-    type Err = ResourceTypeParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        println!("{}", s);
-        match s {
-            "gpu" => Ok(ResourceType::GPU),
-            "cpu" => Ok(ResourceType::CPU),
-            _ => Err(ResourceTypeParseError{}),
-        }
-    }
-}
-
-impl std::fmt::Display for ResourceType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self {
-            GPU => "gpu",
-            CPU => "cpu",
-        })
-    }
-}
 
 pub struct Consumer {
     resources: HashMap<ResourceType, Vec<usize>>,
@@ -242,6 +222,13 @@ pub struct TaskSpooler {
     pub task_queue: Arc<RwLock<TaskQueue>>,
 }
 
+#[derive(Display, Serialize, Deserialize)]
+pub enum TaskStatus {
+    Waiting,
+    Processing,
+    Finished,
+}
+
 impl Default for TaskSpooler {
     fn default() -> Self {
         TaskSpooler {
@@ -253,17 +240,23 @@ impl Default for TaskSpooler {
 
 impl TaskSpooler {
     pub fn from_config(config: &config::Config) -> Self {
-        let consumers_config = config.get_array("consumers").expect("not found consumers in config");
-        println!("{:?}", consumers_config);
-        let mut consumers = vec!();
-        for c in consumers_config {
-            let t = c.into_table().unwrap();
-            let t = t.get("resources").unwrap().clone().into_table().unwrap();
-            let resources = t.keys()
-                .map(|rname| ResourceType::from_str(rname.as_str()).unwrap())
-                .zip(t.values().map(|x| x.clone().into_array().unwrap().iter().map(|y| y.clone().into_int().unwrap() as usize).collect())).collect::<HashMap<_, _>>();
-            consumers.push(RwLock::new(Consumer::new(resources)));
-        }
+        // TODO(higumachan): ちゃんとパースエラーなどを上げられるようにする
+        let consumers_config = config.get_array("consumers");
+        let consumers = if consumers_config.is_ok() {
+            let consumers_config = consumers_config.unwrap();
+            let mut consumers = vec!();
+            for c in consumers_config {
+                let t = c.into_table().unwrap();
+                let t = t.get("resources").unwrap().clone().into_table().unwrap();
+                let resources = t.keys()
+                    .map(|rname| ResourceType::from_str(rname.as_str()).unwrap())
+                    .zip(t.values().map(|x| x.clone().into_array().unwrap().iter().map(|y| y.clone().into_int().unwrap() as usize).collect())).collect::<HashMap<_, _>>();
+                consumers.push(RwLock::new(Consumer::new(resources)));
+            }
+            consumers
+        } else {
+            vec![RwLock::new(Consumer::default())]
+        };
         TaskSpooler {
             consumers: Arc::new(consumers),
             task_queue: Arc::new(RwLock::new(TaskQueue::default())),
@@ -273,12 +266,14 @@ impl TaskSpooler {
         join_all(self.consumers.iter().map(|x| Consumer::consume(x, &self.task_queue))).await;
     }
 
-    pub fn task_list(&self) -> Vec<Task> {
-        let mut tasks = vec![];
+    pub fn task_list(&self) -> Vec<(TaskStatus, Task)> {
+        let mut tasks: Vec<(TaskStatus, Task)> = vec![];
         let processing: Vec<Task> = self.consumers.iter().filter_map(|x| x.read().unwrap().processing.clone()).collect();
-        tasks.extend(processing);
-        tasks.extend(self.task_queue.read().unwrap().waiting.clone());
-        tasks.extend(self.task_queue.read().unwrap().finished.clone());
+        tasks.extend(processing.into_iter().map(|x| (TaskStatus::Processing, x)));
+        tasks.extend(self.task_queue.read().unwrap().waiting
+            .clone().into_iter().map(|x| (TaskStatus::Waiting, x)));
+        tasks.extend(self.task_queue.read().unwrap().finished
+            .clone().into_iter().map(|x| (TaskStatus::Finished, x)));
         tasks
     }
 }
@@ -396,8 +391,8 @@ mod tests {
         let task1_id = tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(1), None, None);
         let task2_id = tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(10), None, None);
         assert_eq!(tsp.task_list().len(), 2);
-        assert_eq!(tsp.task_list()[0].id, task1_id);
-        assert_eq!(tsp.task_list()[1].id, task2_id);
+        assert_eq!(tsp.task_list()[0].1.id, task1_id);
+        assert_eq!(tsp.task_list()[1].1.id, task2_id);
 
         assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 2);
         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
@@ -416,8 +411,8 @@ mod tests {
                         assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
                         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
                         assert_eq!(tsp.task_list().len(), 2);
-                        assert_eq!(tsp.task_list()[0].id, task1_id);
-                        assert_eq!(tsp.task_list()[1].id, task2_id);
+                        assert_eq!(tsp.task_list()[0].1.id, task1_id);
+                        assert_eq!(tsp.task_list()[1].1.id, task2_id);
                     })
                 }
                 _ = &mut f => {
@@ -426,8 +421,8 @@ mod tests {
                     assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 0);
                     assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 1);
                     assert_eq!(tsp.task_list().len(), 2);
-                    assert_eq!(tsp.task_list()[0].id, task2_id);
-                    assert_eq!(tsp.task_list()[1].id, task1_id);
+                    assert_eq!(tsp.task_list()[0].1.id, task2_id);
+                    assert_eq!(tsp.task_list()[1].1.id, task1_id);
                     break;
                 }
             }

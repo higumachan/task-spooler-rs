@@ -6,6 +6,9 @@ use task_spooler::TaskSpooler;
 use std::cell::{Cell, RefCell};
 use std::borrow::Borrow;
 use std::sync::{Once};
+use config::Source;
+use std::path::PathBuf;
+use std::str::FromStr;
 
 mod connections;
 
@@ -15,7 +18,10 @@ fn singleton() -> Box<TaskSpooler> {
 
     unsafe {
         ONCE.call_once(|| {
-            let singleton = TaskSpooler::default();
+            let mut config = config::Config::default();
+            config.merge(config::File::with_name(
+                dirs::home_dir().unwrap().join(PathBuf::from_str(".tsp.yaml").unwrap()).to_str().unwrap()));
+            let singleton = TaskSpooler::from_config(&config);
             SINGLETON = Some(Box::new(singleton));
         });
 

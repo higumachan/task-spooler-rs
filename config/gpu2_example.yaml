@@ -1,5 +1,5 @@
 consumers:
   - resources:
-      gpu: [0]
+      GPU: [0]
   - resources:
-      gpu: [1]
+      GPU: [1]
