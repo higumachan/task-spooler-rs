@@ -28,16 +28,78 @@ impl ResourceRequirementsExt for ResourceRequirements {
     }
 }
 
+#[derive(Debug)]
+struct ParseArgumentError;
+
+impl std::fmt::Display for ParseArgumentError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ParseArgumentError")
+    }
+}
+
+impl std::error::Error for ParseArgumentError {
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+enum Argument {
+    Normal(String),
+    Placeholder{resource_type: ResourceType, id: usize},
+}
+
+impl std::fmt::Display for Argument {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Normal(s) => write!(f, "{}", s),
+            Self::Placeholder{ resource_type, id } => write!(f, "{}:{}", resource_type, id)
+        }
+    }
+}
+
+
+impl std::str::FromStr for Argument {
+    type Err = Box<dyn std::error::Error>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(t) = s.chars().nth(0) {
+            if t == '#' {
+                let remain = &s[1..];
+                let kv: Vec<_> = remain.split(":").collect();
+                let resource_type = ResourceType::from_str(kv.get(0).ok_or(ParseArgumentError)?)?;
+                let id = usize::from_str(kv.get(1).ok_or(ParseArgumentError)?)?;
+                Ok(Self::Placeholder{resource_type, id})
+            } else {
+                Ok(Self::Normal(s.to_string()))
+            }
+        } else {
+            Ok(Self::Normal(s.to_string()))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ResourceNotFoundError;
+
+impl Argument {
+    fn replace_resource(&self, resources: &Resources) -> Result<String, ResourceNotFoundError> {
+        match self {
+            Self::Normal(s) => Ok(s.to_string()),
+            Self::Placeholder{ resource_type, id } =>
+                Ok(resources.get(resource_type).ok_or(ResourceNotFoundError{})?
+                    .get(*id).ok_or(ResourceNotFoundError{})?.to_string())
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct CommandPart {
     program: String,
-    arguments: Vec<String>,
+    arguments: Vec<Argument>,
 }
 
 impl std::fmt::Display for CommandPart {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {}", self.program, self.arguments.join(" "))
+        let arguments: Vec<String> = self.arguments.iter().map(|x| x.to_string()).collect();
+        write!(f, "{} {}", self.program, arguments.join(" "))
     }
 }
 
@@ -50,15 +112,18 @@ impl CommandPart {
     }
 
     pub fn args(&self, arguments: &Vec<String>) -> Self {
+        let arguments = arguments.clone().iter().map(|x| Argument::from_str(x).expect("parse arguments error")).collect();
+
         CommandPart {
             program: self.program.clone(),
-            arguments: arguments.clone(),
+            arguments: arguments,
         }
     }
 
-    fn to_command(&self) -> Command {
+    fn to_command(&self, resources: &Resources) -> Command {
         let mut com = Command::new(&self.program);
-        com.args(&self.arguments);
+        let args: Vec<String> = self.arguments.iter().map(|x| x.replace_resource(resources).expect("resource not found error")).collect();
+        com.args(&args);
         com
     }
 }
@@ -84,8 +149,8 @@ impl Task {
             output_filepath: None,
         }
     }
-    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>>  {
-        let mut command = self.command_part.to_command();
+    async fn run(&mut self, resources: &Resources) -> Result<(), Box<dyn std::error::Error>>  {
+        let mut command = self.command_part.to_command(resources);
         let mut tmp = tempfile::NamedTempFile::new_in("/tmp").expect("fail create tempfile for output");
         self.output_filepath = Some(tmp.path().to_path_buf());
         let f = tmp.reopen().unwrap();
@@ -200,7 +265,7 @@ impl Consumer {
             }
             let mut run_task = task.clone().unwrap();
             self_.write().unwrap().processing = task;
-            run_task.run().await.expect("fail child command");
+            run_task.run(&self_.read().unwrap().resources.clone()).await.expect("fail child command");
             task_queue.write().unwrap().finished.push(run_task);
             self_.write().unwrap().processing = None;
         }
@@ -287,6 +352,7 @@ mod tests {
     use std::fs::File;
     use std::io::Read;
     use std::str::from_utf8;
+    use futures::StreamExt;
 
     impl Default for CommandPart {
         fn default() -> Self {
@@ -345,6 +411,11 @@ mod tests {
                    *task_spooler.consumers[0].read().unwrap().resources.get(&ResourceType::GPU).unwrap());
     }
 
+    #[test]
+    fn test_replace_argument() {
+
+    }
+
     #[tokio::test]
     async fn test_dequeue_when_empty() {
         let mut consumer = Consumer::default();
@@ -371,7 +442,8 @@ mod tests {
             ResourceRequirements::new(),
         );
 
-        task.run().await.unwrap();
+        let resources = Resources::new();
+        task.run(&resources).await.unwrap();
 
         assert_eq!(task.return_code.unwrap(), 0);
         assert!(task.output_filepath.is_some());
