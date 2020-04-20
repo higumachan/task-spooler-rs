@@ -6,6 +6,8 @@ use std::collections::{HashMap};
 use serde::{Deserialize, Serialize};
 use tokio::time::{delay_for};
 use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::io::Write;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -51,12 +53,13 @@ impl CommandPart {
 }
 
 #[derive(Clone, Debug)]
-struct Task {
+pub struct Task {
     id: usize,
     return_code: Option<i32>,
     requirements: ResourceRequirements,
     priority: i64,
     command_part: CommandPart,
+    output_filepath: Option<PathBuf>,
 }
 
 impl Task {
@@ -67,7 +70,21 @@ impl Task {
             requirements,
             priority,
             command_part,
+            output_filepath: None,
         }
+    }
+    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>>  {
+        let mut command = self.command_part.to_command();
+        let mut tmp = tempfile::NamedTempFile::new_in("/tmp").expect("fail create tempfile for output");
+        self.output_filepath = Some(tmp.path().to_path_buf());
+        let f = tmp.reopen().unwrap();
+        command.stdout(f);
+        let status = command.status().await?;
+        self.return_code = Some(status.code().unwrap());
+        let filename = PathBuf::from(format!("/tmp/tsp_{}.log", self.id));
+        self.output_filepath = Some(filename.clone());
+        tmp.persist(filename);
+        Result::Ok(())
     }
     fn with_return_code(&self, return_code: i32) -> Self {
         Self {
@@ -76,6 +93,7 @@ impl Task {
             priority: self.priority,
             command_part: self.command_part.clone(),
             requirements: self.requirements.clone(),
+            output_filepath: None,
         }
     }
 }
@@ -108,10 +126,10 @@ impl TaskQueue {
         self.waiting.push(task);
         id
     }
-    fn dequeue_with_constraints(&mut self, consumer: &Consumer) -> Option<Task> {
+    fn dequeue_with_constraints(&mut self, resources: &Resources) -> Option<Task> {
         let mut waiting_with_index: Vec<(usize, &Task)> = self.waiting.iter().enumerate().collect();  // TODO(higumachan): いつか直す
         waiting_with_index.sort_by_key(|(_, v)| -v.priority);
-        let target_index = waiting_with_index.iter().filter(|(_, task)| { task.requirements.is_satisfy(&consumer.resources) }).next()?.0;
+        let target_index = waiting_with_index.iter().filter(|(_, task)| { task.requirements.is_satisfy(resources) }).next()?.0;
         let r = self.waiting.remove(target_index);
         Some(r)
     }
@@ -135,6 +153,7 @@ pub enum ResourceType {
 
 pub struct Consumer {
     resources: HashMap<ResourceType, Vec<usize>>,
+    processing: Option<Task>,
 }
 
 impl Default for Consumer {
@@ -145,25 +164,25 @@ impl Default for Consumer {
 
         Self {
             resources,
+            processing: None,
         }
     }
 }
 
 impl Consumer {
-    async fn consume(&self, task_queue: &Arc<RwLock<TaskQueue>>) {
+    async fn consume(self_: &RwLock<Self>, task_queue: &Arc<RwLock<TaskQueue>>) {
         loop {
             let mut task: Option<Task> = None;
             while task.is_none() {
-                task = task_queue.write().unwrap().dequeue_with_constraints(self);
+                task = task_queue.write().unwrap().dequeue_with_constraints(&self_.read().unwrap().resources);
                 delay_for(Duration::from_millis(100)).await;
             }
-            let task = task.unwrap();
-            let mut command = task.command_part.to_command();
-            println!("start: {} {}", task.command_part.program, task.command_part.arguments.join(" "));
-            let status = command.status().await.expect("fail child command");
-
-            let task = task.with_return_code(status.code().unwrap());
-            task_queue.write().unwrap().finished.push(task);
+            let mut run_task = task.clone().unwrap();
+            self_.write().unwrap().processing = task;
+            run_task.run().await.expect("fail child command");
+            // println!("finish: {} {}", task.command_part.program, task.command_part.arguments.join(" "));
+            task_queue.write().unwrap().finished.push(run_task);
+            self_.write().unwrap().processing = None;
         }
     }
 
@@ -171,21 +190,22 @@ impl Consumer {
         let mut resources = self.resources.clone();
         resources.insert(resource_type, amount);
         Self {
-            resources
+            resources,
+            processing: self.processing.clone(),
         }
     }
 }
 
 #[derive(Clone)]
 pub struct TaskSpooler {
-    consumers: Arc<RwLock<Vec<Consumer>>>,
+    consumers: Arc<Vec<RwLock<Consumer>>>,
     pub task_queue: Arc<RwLock<TaskQueue>>,
 }
 
 impl Default for TaskSpooler {
     fn default() -> Self {
         TaskSpooler {
-            consumers: Arc::new(RwLock::new(vec![Consumer::default()])),
+            consumers: Arc::new(vec![RwLock::new(Consumer::default())]),
             task_queue: Arc::new(RwLock::new(TaskQueue::default())),
         }
     }
@@ -193,8 +213,16 @@ impl Default for TaskSpooler {
 
 impl TaskSpooler {
     pub async fn run(&self) {
-        let consumers = self.consumers.write().unwrap();
-        join_all(consumers.iter().map(|x| x.consume(&self.task_queue))).await;
+        join_all(self.consumers.iter().map(|x| Consumer::consume(x, &self.task_queue))).await;
+    }
+
+    pub fn task_list(&self) -> Vec<Task> {
+        let mut tasks = vec![];
+        let processing: Vec<Task> = self.consumers.iter().filter_map(|x| x.read().unwrap().processing.clone()).collect();
+        tasks.extend(processing);
+        tasks.extend(self.task_queue.read().unwrap().waiting.clone());
+        tasks.extend(self.task_queue.read().unwrap().finished.clone());
+        tasks
     }
 }
 
@@ -204,11 +232,19 @@ mod tests {
     use super::*;
     use tokio::time::timeout;
     use std::time::Duration;
-
+    use std::fs::File;
+    use std::io::Read;
+    use std::str::from_utf8;
 
     impl Default for CommandPart {
         fn default() -> Self {
             CommandPart::new("ls")
+        }
+    }
+
+    impl CommandPart {
+        fn sleep(t: usize) -> Self {
+            CommandPart::new("sleep").args(&vec![t.to_string()])
         }
     }
 
@@ -223,9 +259,9 @@ mod tests {
         ].iter().cloned().collect()));
         let task2_id = tq.enqueue(CommandPart::default(), None, None);
 
-        let dq_task = tq.clone().dequeue_with_constraints(&consumer).unwrap();
+        let dq_task = tq.clone().dequeue_with_constraints(&consumer.resources).unwrap();
         assert_eq!(dq_task.id, task2_id);
-        let dq_task = tq.clone().dequeue_with_constraints(&consumer_with_gpu).unwrap();
+        let dq_task = tq.clone().dequeue_with_constraints(&consumer_with_gpu.resources).unwrap();
         assert_eq!(dq_task.id, task1_id);
     }
 
@@ -238,27 +274,90 @@ mod tests {
         let task2_id = tq.enqueue(CommandPart::default(), Some(10), None);
         let task3_id = tq.enqueue(CommandPart::default(), Some(1), None);
 
-        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        let dq_task = tq.dequeue_with_constraints(&consumer.resources).unwrap();
         assert_eq!(dq_task.id, task2_id);
-        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        let dq_task = tq.dequeue_with_constraints(&consumer.resources).unwrap();
         assert_eq!(dq_task.id, task1_id);
-        let dq_task = tq.dequeue_with_constraints(&consumer).unwrap();
+        let dq_task = tq.dequeue_with_constraints(&consumer.resources).unwrap();
         assert_eq!(dq_task.id, task3_id);
     }
 
     #[tokio::test]
     async fn test_dequeue_when_empty() {
-        let consumer = Consumer::default();
+        let mut consumer = Consumer::default();
         let tq = TaskQueue::default();
 
-        let r = timeout(Duration::from_millis(10), consumer.consume(&Arc::new(RwLock::new(tq)))).await;
+        let r = timeout(Duration::from_millis(10), Consumer::consume(&RwLock::new(consumer), &Arc::new(RwLock::new(tq)))).await;
 
         assert!(r.is_err());
     }
 
     #[tokio::test]
     async fn test_timeout() {
-
         delay_for(Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_run() {
+        let mut task = Task::new(
+            1,
+            CommandPart::new("cargo").args(&vec!(
+                "run".to_string(), "--bin".to_string(), "helloworld".to_string()
+            )),
+            1,
+            ResourceRequirements::new(),
+        );
+
+        task.run().await.unwrap();
+
+        assert_eq!(task.return_code.unwrap(), 0);
+        assert!(task.output_filepath.is_some());
+        let output_filepath = task.output_filepath.unwrap();
+        let mut file = File::open(output_filepath).unwrap();
+        let mut buf = [0; 1024];
+        let n = file.read(&mut buf).unwrap();
+        let result = from_utf8(&buf[0..n]).unwrap();
+        assert_eq!("helloworld\n", result);
+    }
+
+    #[tokio::test]
+    async fn test_consume_and_list() {
+        let mut tsp = TaskSpooler::default();
+
+        assert_eq!(tsp.task_list().len(), 0);
+        {
+            tsp.task_queue.write().unwrap().enqueue(CommandPart::sleep(1), None, None);
+        }
+        assert_eq!(tsp.task_list().len(), 1);
+
+        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
+        assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
+        assert_eq!(tsp.task_list().len(), 1);
+
+        let mut delay1 = delay_for(Duration::from_millis(500));
+        let mut delay2 = delay_for(Duration::from_millis(1500));
+        let d1 = std::sync::Once::new();
+        tokio::pin! {
+            let f = tsp.run();
+        }
+        loop {
+            tokio::select! {
+                _ = &mut delay1 => {
+                    d1.call_once(|| {
+                        assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 0);
+                        assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
+                        assert_eq!(tsp.task_list().len(), 1);
+                    })
+                }
+                _ = &mut f => {
+                }
+                _ = &mut delay2 => {
+                    assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 0);
+                    assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 1);
+                    assert_eq!(tsp.task_list().len(), 1);
+                    break;
+                }
+            }
+        }
     }
 }

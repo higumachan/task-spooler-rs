@@ -14,6 +14,10 @@ path = "src/server.rs"
 name = "client"
 path = "src/main.rs"
 
+[[bin]]
+name = "helloworld"
+path = "test_commands/src/helloworld.rs"
+
 [dependencies]
 tonic        = "0.2.0"
 bytes        = "0.4"
@@ -24,6 +28,7 @@ futures = "0.3"
 argparse = "0.2.2"
 bincode = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+tempfile = "3.1.0"
 
 [build-dependencies]
 tonic-build  = "0.2.0"
