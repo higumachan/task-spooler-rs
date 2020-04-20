@@ -1,0 +1,5 @@
+consumers:
+  - resources:
+      gpu: [0]
+  - resources:
+      gpu: [1]

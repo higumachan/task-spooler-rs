@@ -9,6 +9,8 @@ use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use serde::export::Formatter;
+use std::str::FromStr;
+use std::string::ParseError;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -153,10 +155,26 @@ impl TaskQueue {
     }
 }
 
+#[derive(Debug)]
+pub struct ResourceTypeParseError;
+
 #[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ResourceType {
     GPU,
     CPU,
+}
+
+impl FromStr for ResourceType {
+    type Err = ResourceTypeParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        println!("{}", s);
+        match s {
+            "gpu" => Ok(ResourceType::GPU),
+            "cpu" => Ok(ResourceType::CPU),
+            _ => Err(ResourceTypeParseError{}),
+        }
+    }
 }
 
 impl std::fmt::Display for ResourceType {
@@ -187,6 +205,12 @@ impl Default for Consumer {
 }
 
 impl Consumer {
+    pub fn new(resources: Resources) -> Self {
+        Self {
+            resources,
+            processing: None,
+        }
+    }
     async fn consume(self_: &RwLock<Self>, task_queue: &Arc<RwLock<TaskQueue>>) {
         loop {
             let mut task: Option<Task> = None;
@@ -228,6 +252,23 @@ impl Default for TaskSpooler {
 }
 
 impl TaskSpooler {
+    pub fn from_config(config: &config::Config) -> Self {
+        let consumers_config = config.get_array("consumers").expect("not found consumers in config");
+        println!("{:?}", consumers_config);
+        let mut consumers = vec!();
+        for c in consumers_config {
+            let t = c.into_table().unwrap();
+            let t = t.get("resources").unwrap().clone().into_table().unwrap();
+            let resources = t.keys()
+                .map(|rname| ResourceType::from_str(rname.as_str()).unwrap())
+                .zip(t.values().map(|x| x.clone().into_array().unwrap().iter().map(|y| y.clone().into_int().unwrap() as usize).collect())).collect::<HashMap<_, _>>();
+            consumers.push(RwLock::new(Consumer::new(resources)));
+        }
+        TaskSpooler {
+            consumers: Arc::new(consumers),
+            task_queue: Arc::new(RwLock::new(TaskQueue::default())),
+        }
+    }
     pub async fn run(&self) {
         join_all(self.consumers.iter().map(|x| Consumer::consume(x, &self.task_queue))).await;
     }
@@ -296,6 +337,17 @@ mod tests {
         assert_eq!(dq_task.id, task1_id);
         let dq_task = tq.dequeue_with_constraints(&consumer.resources).unwrap();
         assert_eq!(dq_task.id, task3_id);
+    }
+
+    #[test]
+    fn test_config_gpu2() {
+        let mut config = config::Config::default();
+        config.merge(config::File::with_name("./config/gpu2_example.yaml")).unwrap();
+        let task_spooler = TaskSpooler::from_config(&config);
+
+        assert_eq!(2, task_spooler.consumers.len());
+        assert_eq!(vec![0usize],
+                   *task_spooler.consumers[0].read().unwrap().resources.get(&ResourceType::GPU).unwrap());
     }
 
     #[tokio::test]
