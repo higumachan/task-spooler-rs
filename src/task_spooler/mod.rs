@@ -1,9 +1,8 @@
-use tokio::prelude::*;
 use tokio::process::Command;
 use futures::future::*;
 use std::sync::RwLock;
 use std::sync::{Arc};
-use std::collections::{VecDeque, HashMap};
+use std::collections::{HashMap};
 use serde::{Deserialize, Serialize};
 use tokio::time::{delay_for};
 use std::time::Duration;
@@ -154,7 +153,7 @@ impl Consumer {
     async fn consume(&self, task_queue: &Arc<RwLock<TaskQueue>>) {
         loop {
             let mut task: Option<Task> = None;
-            while (task.is_none()) {
+            while task.is_none() {
                 task = task_queue.write().unwrap().dequeue_with_constraints(self);
                 delay_for(Duration::from_millis(100)).await;
             }
@@ -177,6 +176,7 @@ impl Consumer {
     }
 }
 
+#[derive(Clone)]
 pub struct TaskSpooler {
     consumers: Arc<RwLock<Vec<Consumer>>>,
     pub task_queue: Arc<RwLock<TaskQueue>>,
@@ -203,7 +203,6 @@ impl TaskSpooler {
 mod tests {
     use super::*;
     use tokio::time::timeout;
-    use tokio::sync::oneshot;
     use std::time::Duration;
 
 
@@ -250,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn test_dequeue_when_empty() {
         let consumer = Consumer::default();
-        let mut tq = TaskQueue::default();
+        let tq = TaskQueue::default();
 
         let r = timeout(Duration::from_millis(10), consumer.consume(&Arc::new(RwLock::new(tq)))).await;
 

@@ -1,36 +1,36 @@
 use tokio::net::TcpListener;
 use tokio::prelude::*;
-use tokio::process::Command;
-use futures::future::*;
-use std::sync::RwLock;
-use std::sync::{Arc};
-use std::collections::{VecDeque, HashMap};
 
 mod task_spooler;
-use task_spooler::{TaskSpooler, Consumer, TaskQueue, CommandPart};
+use task_spooler::TaskSpooler;
+use std::cell::{Cell, RefCell};
+use std::borrow::Borrow;
+use std::sync::{Once};
 
 mod connections;
 
-#[tokio::main]
-async fn main() {
-    let tsp = TaskSpooler::default();
+fn singleton() -> Box<TaskSpooler> {
+    static mut SINGLETON: Option<Box<TaskSpooler>>=None;
+    static mut ONCE: Once = Once::new();
 
-    /*
-    for i in 1..5 {
+    unsafe {
+        ONCE.call_once(|| {
+            let singleton = TaskSpooler::default();
+            SINGLETON = Some(Box::new(singleton));
+        });
 
-        tsp.task_queue.write().unwrap().enqueue(
-            CommandPart::new("sleep").args(&vec![i.to_string()]),
-            None,
-            None,
-        );
+        SINGLETON.clone().unwrap()
     }
-    */
-
-    println!("start server");
-    tokio::join!(tsp.run(), server_loop("127.0.0.1", 7135));
 }
 
-async fn server_loop(addr: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() {
+    println!("start server");
+    let task_spooler= singleton();
+    tokio::join!(task_spooler.run(), server_loop("127.0.0.1".to_string(), 7135));
+}
+
+async fn server_loop(addr: String, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::bind(format!("{}:{}", addr, port)).await?;
 
     loop {
@@ -52,6 +52,16 @@ async fn server_loop(addr: &str, port: u16) -> Result<(), Box<dyn std::error::Er
                 };
                 let r: connections::types::RequestType = bincode::deserialize(&buf[0..n]).unwrap();
                 println!("got {:?}", r);
+                let task_spooler = singleton();
+                match r {
+                    connections::types::RequestType::Enqueue(command_part, priority, resource_requirements) => {
+                        task_spooler.task_queue.write().unwrap().enqueue(command_part, priority, resource_requirements);
+                    }
+                    _ => {
+                        panic!("unknown request");
+                    }
+                }
+
             }
         });
     }
