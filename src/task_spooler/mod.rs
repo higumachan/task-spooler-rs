@@ -413,7 +413,26 @@ mod tests {
 
     #[test]
     fn test_replace_argument() {
+        let mut arguments = vec![
+            Argument::Normal("test".to_string()),
+            Argument::Placeholder {resource_type: ResourceType::GPU, id: 0},
+            Argument::Placeholder {resource_type: ResourceType::GPU, id: 1},
+        ];
+        let resource1 = [(ResourceType::GPU, vec![0usize, 1usize])].iter().cloned().collect::<Resources>();
+        let resource2 = [(ResourceType::GPU, vec![1usize, 2usize])].iter().cloned().collect::<Resources>();
+        let resource3 = [].iter().cloned().collect::<Resources>();
 
+        assert_eq!(arguments[0].replace_resource(&resource1).unwrap(), "test");
+        assert_eq!(arguments[1].replace_resource(&resource1).unwrap(), "0");
+        assert_eq!(arguments[2].replace_resource(&resource1).unwrap(), "1");
+
+        assert_eq!(arguments[0].replace_resource(&resource2).unwrap(), "test");
+        assert_eq!(arguments[1].replace_resource(&resource2).unwrap(), "1");
+        assert_eq!(arguments[2].replace_resource(&resource2).unwrap(), "2");
+
+        assert_eq!(arguments[0].replace_resource(&resource3).unwrap(), "test");
+        assert!(arguments[1].replace_resource(&resource3).is_err());
+        assert!(arguments[2].replace_resource(&resource3).is_err());
     }
 
     #[tokio::test]
