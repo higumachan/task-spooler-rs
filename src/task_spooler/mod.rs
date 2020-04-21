@@ -435,6 +435,14 @@ mod tests {
         assert!(arguments[2].replace_resource(&resource3).is_err());
     }
 
+    #[test]
+    fn test_parse_arguments() {
+        let s = "nadeko";
+        assert_eq!(Argument::from_str(s).unwrap(), Argument::Normal("nadeko".to_string()));
+        let s = "#GPU:0";
+        assert_eq!(Argument::from_str(s).unwrap(), Argument::Placeholder{resource_type: ResourceType::GPU, id: 0});
+    }
+
     #[tokio::test]
     async fn test_dequeue_when_empty() {
         let mut consumer = Consumer::default();
