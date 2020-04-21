@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-use crate::task_spooler::{CommandPart, ResourceRequirements};
+use crate::task_spooler::{CommandPart, ResourceRequirements, Argument};
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
 pub enum RequestType {
-    Enqueue(CommandPart, Option<i64>, Option<ResourceRequirements>),
+    Enqueue(CommandPart<Argument>, Option<i64>, Option<ResourceRequirements>),
     UpdateConsumers(),
     ShowQueue(),
 }

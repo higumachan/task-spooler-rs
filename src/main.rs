@@ -3,7 +3,7 @@ use tokio::net::TcpStream;
 use tokio::prelude::*;
 use argparse::{ArgumentParser, List, Store};
 use std::io::{stdout, stderr};
-use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType};
+use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType, Argument};
 use crate::connections::types::RequestType;
 
 pub mod task_spooler;
@@ -74,8 +74,10 @@ async fn enqueue_command(mut args: Vec<String>) {
         (ResourceType::from_str(&ts[0]).unwrap(), usize::from_str(ts[1]).unwrap())
     }).collect::<ResourceRequirements>();
 
+    let command_part = CommandPart::new(program.as_str());
+    let command_part = command_part.args(&program_args);
     let request = connections::types::RequestType::Enqueue(
-        CommandPart::new(program.as_str()).args(&program_args),
+        command_part,
         None,
         Some(requires),
     );
@@ -95,7 +97,10 @@ async fn show_queue_command(mut args: Vec<String>) {
 
     println!("id\tstatus    \tcommand          \trequirements\toutput");
     for (status, task) in tasklist {
-        let command = format!("{}", task.command_part);
+        let command_part: Box<dyn std::fmt::Display> = if task.command_part_exec.is_some() {
+            Box::new(task.command_part_exec.unwrap())
+        } else { Box::new(task.command_part_plan) };
+        let command = format!("{}", command_part);
         let command = truncate_string(&command, 16).unwrap();
         println!("{}\t{: ^10}\t{: <12}\t{}\t{}", task.id, status, command, format_resource(&task.requirements), "");
     };

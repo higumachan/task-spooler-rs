@@ -12,6 +12,9 @@ use serde::export::Formatter;
 use std::str::FromStr;
 use std::string::ParseError;
 use strum_macros::{Display, EnumString};
+use serde::de::DeserializeOwned;
+use std::fmt::{Debug};
+use std::fs::read_to_string;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -41,7 +44,7 @@ impl std::error::Error for ParseArgumentError {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-enum Argument {
+pub enum Argument {
     Normal(String),
     Placeholder{resource_type: ResourceType, id: usize},
 }
@@ -76,8 +79,20 @@ impl std::str::FromStr for Argument {
     }
 }
 
-#[derive(Debug)]
-struct ResourceNotFoundError;
+trait Error : Send + Clone + Debug {
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResourceNotFoundError;
+
+impl std::fmt::Display for ResourceNotFoundError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ResourceNotFoundError")
+    }
+}
+
+impl Error for ResourceNotFoundError {
+}
 
 impl Argument {
     fn replace_resource(&self, resources: &Resources) -> Result<String, ResourceNotFoundError> {
@@ -91,19 +106,25 @@ impl Argument {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct CommandPart {
+pub struct CommandPart<T> where T:
+    Clone + Debug + Eq + PartialEq + std::fmt::Display + FromStr
+ {
     program: String,
-    arguments: Vec<Argument>,
+    arguments: Vec<T>,
 }
 
-impl std::fmt::Display for CommandPart {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl<T> std::fmt::Display for CommandPart<T> where T:
+    Clone + Debug + Eq + PartialEq + std::fmt::Display + FromStr
+{
+fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let arguments: Vec<String> = self.arguments.iter().map(|x| x.to_string()).collect();
         write!(f, "{} {}", self.program, arguments.join(" "))
     }
 }
 
-impl CommandPart {
+impl<T> CommandPart<T> where T:
+    Clone + Debug + Eq + PartialEq + std::fmt::Display + FromStr
+{
     pub fn new(program: &str) -> Self {
         CommandPart {
             program: program.to_string(),
@@ -111,8 +132,13 @@ impl CommandPart {
         }
     }
 
-    pub fn args(&self, arguments: &Vec<String>) -> Self {
-        let arguments = arguments.clone().iter().map(|x| Argument::from_str(x).expect("parse arguments error")).collect();
+    pub fn args(&self, arguments: &Vec<String>) -> Self where
+        <T as std::str::FromStr>::Err : std::fmt::Debug {
+        let arguments = arguments
+            .clone()
+            .iter()
+            .map(|x| T::from_str(x).expect("parse arguments error"))
+            .collect();
 
         CommandPart {
             program: self.program.clone(),
@@ -120,13 +146,27 @@ impl CommandPart {
         }
     }
 
-    fn to_command(&self, resources: &Resources) -> Command {
+}
+
+impl CommandPart<Argument> {
+    fn to_string_command_part(&self, resources: &Resources) -> Result<CommandPart<String>, ResourceNotFoundError> {
+        let mut com = CommandPart::new(&self.program);
+        let args = self.arguments
+            .iter()
+            .map(|x| x.replace_resource(resources)).collect::<Result<Vec<_>, _>>()?;
+        Ok(com.args(&args))
+    }
+}
+
+impl CommandPart<String> {
+    fn to_command(&self) -> Command {
         let mut com = Command::new(&self.program);
-        let args: Vec<String> = self.arguments.iter().map(|x| x.replace_resource(resources).expect("resource not found error")).collect();
-        com.args(&args);
+        com.args(&self.arguments);
         com
     }
 }
+
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
@@ -134,43 +174,55 @@ pub struct Task {
     pub return_code: Option<i32>,
     pub requirements: ResourceRequirements,
     pub priority: i64,
-    pub command_part: CommandPart,
+    pub command_part_plan: CommandPart<Argument>,
+    pub command_part_exec: Option<CommandPart<String>>,
     pub output_filepath: Option<PathBuf>,
+    pub error: Option<ResourceNotFoundError>,
 }
 
 impl Task {
-    fn new(id: usize, command_part: CommandPart, priority: i64, requirements: ResourceRequirements) -> Self {
+    fn new(id: usize, command_part: CommandPart<Argument>, priority: i64, requirements: ResourceRequirements) -> Self {
         Self {
             id,
             return_code: Option::None,
             requirements,
             priority,
-            command_part,
+            command_part_plan: command_part,
+            command_part_exec: None,
             output_filepath: None,
+            error: None,
         }
     }
-    async fn run(&mut self, resources: &Resources) -> Result<(), Box<dyn std::error::Error>>  {
-        let mut command = self.command_part.to_command(resources);
+    async fn run(&mut self, resources: &Resources)  {
+        self.command_part_exec =
+            self.try_set_error(self.command_part_plan.to_string_command_part(resources));
+        if self.command_part_exec.is_none() {
+            return;
+        }
+        let mut command = self.command_part_exec.as_ref().unwrap().to_command();
+
         let mut tmp = tempfile::NamedTempFile::new_in("/tmp").expect("fail create tempfile for output");
         self.output_filepath = Some(tmp.path().to_path_buf());
         let f = tmp.reopen().unwrap();
         command.stdout(f);
-        let status = command.status().await?;
+        let status = command.status().await.unwrap();
         self.return_code = Some(status.code().unwrap());
         let filename = PathBuf::from(format!("/tmp/tsp_{}.log", self.id));
         self.output_filepath = Some(filename.clone());
         tmp.persist(filename);
-        Result::Ok(())
+    }
+    fn try_set_error<T>(&mut self, r: Result<T, ResourceNotFoundError>) -> Option<T> {
+        if let Err(e) = r {
+            self.error = Some(e);
+            None
+        } else {
+            r.ok()
+        }
     }
     fn with_return_code(&self, return_code: i32) -> Self {
-        Self {
-            id: self.id,
-            return_code: Some(return_code),
-            priority: self.priority,
-            command_part: self.command_part.clone(),
-            requirements: self.requirements.clone(),
-            output_filepath: None,
-        }
+        let mut ret = self.clone();
+        ret.return_code = Some(return_code);
+        ret
     }
 }
 
@@ -193,7 +245,7 @@ impl Default for TaskQueue {
 }
 
 impl TaskQueue {
-    pub fn enqueue(&mut self, command_part: CommandPart, priority: Option<i64>, requirements: Option<ResourceRequirements>) -> usize {
+    pub fn enqueue(&mut self, command_part: CommandPart<Argument>, priority: Option<i64>, requirements: Option<ResourceRequirements>) -> usize {
         let priority = priority.unwrap_or(self.next_default_priority());
         let requirements = requirements.unwrap_or(HashMap::new());
 
@@ -265,7 +317,7 @@ impl Consumer {
             }
             let mut run_task = task.clone().unwrap();
             self_.write().unwrap().processing = task;
-            run_task.run(&self_.read().unwrap().resources.clone()).await.expect("fail child command");
+            run_task.run(&self_.read().unwrap().resources.clone()).await;
             task_queue.write().unwrap().finished.push(run_task);
             self_.write().unwrap().processing = None;
         }
@@ -354,13 +406,15 @@ mod tests {
     use std::str::from_utf8;
     use futures::StreamExt;
 
-    impl Default for CommandPart {
+    impl Default for CommandPart<Argument>
+    {
         fn default() -> Self {
             CommandPart::new("ls")
         }
     }
 
-    impl CommandPart {
+    impl CommandPart<Argument>
+    {
         fn sleep(t: usize) -> Self {
             CommandPart::new("sleep").args(&vec![t.to_string()])
         }
@@ -460,17 +514,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_run() {
+        let cp = CommandPart::new("cargo").args(&vec!(
+            "run".to_string(), "--bin".to_string(), "helloworld".to_string()
+        ));
         let mut task = Task::new(
             1,
-            CommandPart::new("cargo").args(&vec!(
-                "run".to_string(), "--bin".to_string(), "helloworld".to_string()
-            )),
+            cp,
             1,
             ResourceRequirements::new(),
         );
 
         let resources = Resources::new();
-        task.run(&resources).await.unwrap();
+        task.run(&resources).await;
 
         assert_eq!(task.return_code.unwrap(), 0);
         assert!(task.output_filepath.is_some());
@@ -480,6 +535,23 @@ mod tests {
         let n = file.read(&mut buf).unwrap();
         let result = from_utf8(&buf[0..n]).unwrap();
         assert_eq!("helloworld\n", result);
+    }
+
+    #[tokio::test]
+    async fn test_task_run_fail() {
+        let cp = CommandPart::new("cargo").args(&vec!(
+            "run".to_string(), "--bin".to_string(), "#GPU:20".to_string()
+        ));
+        let mut task = Task::new(
+            1,
+            cp,
+            1,
+            ResourceRequirements::new(),
+        );
+
+        let resources = Resources::new();
+        task.run(&resources).await;
+        assert!(task.error.is_some());
     }
 
     #[tokio::test]
