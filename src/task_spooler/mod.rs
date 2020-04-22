@@ -14,7 +14,8 @@ use std::string::ParseError;
 use strum_macros::{Display, EnumString};
 use serde::de::DeserializeOwned;
 use std::fmt::{Debug};
-use std::fs::read_to_string;
+use std::fs::{read_to_string, File};
+use std::panic::resume_unwind;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -193,23 +194,24 @@ impl Task {
             error: None,
         }
     }
-    async fn run(&mut self, resources: &Resources)  {
+    fn prepare(&mut self, resources: &Resources) {
         self.command_part_exec =
             self.try_set_error(self.command_part_plan.to_string_command_part(resources));
-        if self.command_part_exec.is_none() {
+        let mut tmp = tempfile::NamedTempFile::new_in("/tmp").expect("fail create tempfile for output");
+        let (_, path) = tmp.keep().unwrap();
+        self.output_filepath = Some(path);
+    }
+
+    async fn run(&mut self)  {
+        if self.error.is_some() {
             return;
         }
         let mut command = self.command_part_exec.as_ref().unwrap().to_command();
 
-        let mut tmp = tempfile::NamedTempFile::new_in("/tmp").expect("fail create tempfile for output");
-        self.output_filepath = Some(tmp.path().to_path_buf());
-        let f = tmp.reopen().unwrap();
+        let f = File::create(&self.output_filepath.as_ref().unwrap()).unwrap();
         command.stdout(f);
         let status = command.status().await.unwrap();
         self.return_code = Some(status.code().unwrap());
-        let filename = PathBuf::from(format!("/tmp/tsp_{}.log", self.id));
-        self.output_filepath = Some(filename.clone());
-        tmp.persist(filename);
     }
     fn try_set_error<T>(&mut self, r: Result<T, ResourceNotFoundError>) -> Option<T> {
         if let Err(e) = r {
@@ -315,9 +317,10 @@ impl Consumer {
                 task = task_queue.write().unwrap().dequeue_with_constraints(&self_.read().unwrap().resources);
                 delay_for(Duration::from_millis(100)).await;
             }
-            let mut run_task = task.clone().unwrap();
-            self_.write().unwrap().processing = task;
-            run_task.run(&self_.read().unwrap().resources.clone()).await;
+            let mut run_task = task.unwrap();
+            run_task.prepare(&self_.read().unwrap().resources.clone());
+            self_.write().unwrap().processing = Some(run_task.clone());
+            run_task.run().await;
             task_queue.write().unwrap().finished.push(run_task);
             self_.write().unwrap().processing = None;
         }
@@ -525,7 +528,8 @@ mod tests {
         );
 
         let resources = Resources::new();
-        task.run(&resources).await;
+        task.prepare(&resources);
+        task.run().await;
 
         assert_eq!(task.return_code.unwrap(), 0);
         assert!(task.output_filepath.is_some());
@@ -550,7 +554,8 @@ mod tests {
         );
 
         let resources = Resources::new();
-        task.run(&resources).await;
+        task.prepare(&resources);
+        task.run().await;
         assert!(task.error.is_some());
     }
 
@@ -579,6 +584,7 @@ mod tests {
             tokio::select! {
                 _ = &mut delay1 => {
                     d1.call_once(|| {
+                        assert!(tsp.consumers[0].read().unwrap().processing.as_ref().unwrap().output_filepath.is_some());
                         assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
                         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
                         assert_eq!(tsp.task_list().len(), 2);
