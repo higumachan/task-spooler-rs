@@ -81,6 +81,7 @@ async fn enqueue_command(mut args: Vec<String>) {
         ap.refer(&mut requires).add_option(&["--require", "-r"], List, "TODO");
         ap.refer(&mut program).required().add_argument("program", Store, "TODO");
         ap.refer(&mut program_args).add_argument("program_arguments", List, "TODO");
+        ap.stop_on_first_argument(true);
         ap.parse_args_or_exit();
     }
     let requires = requires.iter().map(|x| {

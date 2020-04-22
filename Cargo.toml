@@ -18,6 +18,10 @@ path = "src/main.rs"
 name = "helloworld"
 path = "test_commands/src/helloworld.rs"
 
+[[bin]]
+name = "helloworld10"
+path = "test_commands/src/helloworld10.rs"
+
 [dependencies]
 tonic        = "0.2.0"
 bytes        = "0.4"
