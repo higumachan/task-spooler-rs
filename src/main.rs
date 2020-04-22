@@ -1,10 +1,10 @@
 use std::str::FromStr;
-use tokio::net::TcpStream;
-use tokio::prelude::*;
 use argparse::{ArgumentParser, List, Store, StoreOption};
 use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType, Argument};
 use crate::connections::types::RequestType;
+use crate::connections::client::Client;
 use std::path::PathBuf;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 pub mod task_spooler;
 pub mod connections;
@@ -32,6 +32,8 @@ impl FromStr for Command {
 
 #[tokio::main]
 async fn main() {
+    let client = Client::new("test.unix");
+
     let mut subcommand = Command::show_queue;
     let mut args = vec!();
     let mut parse_result = Ok(());
@@ -65,12 +67,12 @@ async fn main() {
     }
 
     match subcommand {
-        Command::enqueue => enqueue_command(args).await,
-        Command::show_queue => show_queue_command(args).await,
+        Command::enqueue => enqueue_command(&client, args).await,
+        Command::show_queue => show_queue_command(&client, args).await,
     };
 }
 
-async fn enqueue_command(mut args: Vec<String>) {
+async fn enqueue_command(client: &Client, mut args: Vec<String>) {
     args.insert(0, "enqueue".to_string());
     let mut program = "".to_string();
     let mut program_args = vec!();
@@ -98,13 +100,13 @@ async fn enqueue_command(mut args: Vec<String>) {
     );
 
     let bytes = bincode::serialize(&request).unwrap();
-    let mut stream = TcpStream::connect("127.0.0.1:7135").await.expect("connection fail");
+    let mut stream = client.connect().await.expect("connection fail");
     stream.write(&bytes).await.unwrap();
 }
 
-async fn show_queue_command(mut args: Vec<String>) {
+async fn show_queue_command(client: &Client, mut args: Vec<String>) {
     let bytes = bincode::serialize(&RequestType::ShowQueue()).unwrap();
-    let mut stream = TcpStream::connect("127.0.0.1:7135").await.expect("connection fail");
+    let mut stream = client.connect().await.expect("connection fail");
     stream.write(&bytes).await.unwrap();
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();

@@ -1,4 +1,4 @@
-use tokio::net::TcpListener;
+use tokio::net::UnixListener;
 use tokio::prelude::*;
 
 mod task_spooler;
@@ -33,11 +33,12 @@ fn singleton() -> Box<TaskSpooler> {
 async fn main() {
     println!("start server");
     let task_spooler= singleton();
-    tokio::join!(task_spooler.run(), server_loop("127.0.0.1".to_string(), 7135));
+    let socket_path = PathBuf::from_str("test.unix").unwrap();
+    tokio::join!(task_spooler.run(), server_loop(&socket_path));
 }
 
-async fn server_loop(addr: String, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let mut listener = TcpListener::bind(format!("{}:{}", addr, port)).await?;
+async fn server_loop(socket_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut listener = UnixListener::bind(socket_path)?;
 
     loop {
         let (mut socket, _) = listener.accept().await?;
