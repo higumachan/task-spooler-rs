@@ -1,10 +1,10 @@
 use std::str::FromStr;
 use tokio::net::TcpStream;
 use tokio::prelude::*;
-use argparse::{ArgumentParser, List, Store};
-use std::io::{stdout, stderr};
+use argparse::{ArgumentParser, List, Store, StoreOption};
 use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType, Argument};
 use crate::connections::types::RequestType;
+use std::path::PathBuf;
 
 pub mod task_spooler;
 pub mod connections;
@@ -19,30 +19,49 @@ enum Command {
 
 impl FromStr for Command {
     type Err = ();
-    fn from_str(src: &str) -> Result<Command, ()> {
+    fn from_str(src: &str) -> Result<Self, ()> {
         return match src {
             "enqueue" => Ok(Command::enqueue),
+            "eq" => Ok(Command::enqueue),
             "show" => Ok(Command::show_queue),
             _ => Err(()),
         };
     }
 }
 
+
 #[tokio::main]
 async fn main() {
-    let mut subcommand = Command::enqueue;
+    let mut subcommand = Command::show_queue;
     let mut args = vec!();
+    let mut parse_result = Ok(());
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("Task spooling command");
-        ap.refer(&mut subcommand).required()
-            .add_argument("command", Store,
-                          r#"Command to run (either "enqueue",)"#);
+        ap.refer(&mut subcommand).add_argument("command", Store,
+                                               r#"Command to run (either "enqueue",)"#);
         ap.refer(&mut args)
             .add_argument("arguments", List,
                           r#"Arguments for command"#);
         ap.stop_on_first_argument(true);
-        ap.parse_args_or_exit();
+        parse_result = ap.parse(std::env::args().collect(),
+                                &mut std::io::sink(),
+                                &mut std::io::sink());
+    }
+    if let Err(_) = parse_result {
+        {
+            let mut ap = ArgumentParser::new();
+            ap.refer(&mut args)
+                .add_argument("arguments", List,
+                              r#"Arguments for command"#);
+            ap.stop_on_first_argument(true);
+            ap.parse_args_or_exit();
+        }
+        if args.len() == 0 {
+            subcommand = Command::show_queue;
+        } else {
+            subcommand = Command::enqueue;
+        }
     }
 
     match subcommand {
@@ -62,12 +81,7 @@ async fn enqueue_command(mut args: Vec<String>) {
         ap.refer(&mut requires).add_option(&["--require", "-r"], List, "TODO");
         ap.refer(&mut program).required().add_argument("program", Store, "TODO");
         ap.refer(&mut program_args).add_argument("program_arguments", List, "TODO");
-        match ap.parse(args, &mut stdout(), &mut stderr()) {
-            Ok(()) =>  {}
-            Err(x) => {
-                std::process::exit(x);
-            }
-        }
+        ap.parse_args_or_exit();
     }
     let requires = requires.iter().map(|x| {
         let ts: Vec<_> = x.split(":").collect();
@@ -102,7 +116,12 @@ async fn show_queue_command(mut args: Vec<String>) {
         } else { Box::new(task.command_part_plan) };
         let command = format!("{}", command_part);
         let command = truncate_string(&command, 16).unwrap();
-        println!("{}\t{: ^10}\t{: <12}\t{}\t{}", task.id, status, command, format_resource(&task.requirements), "");
+        println!("{}\t{:^10}\t{:<12}\t{}\t{}",
+                 task.id,
+                 status,
+                 command,
+                 format_resource(&task.requirements),
+                 task.output_filepath.as_ref().map_or("", |x| x.as_os_str().to_str().unwrap()));
     };
 }
 
