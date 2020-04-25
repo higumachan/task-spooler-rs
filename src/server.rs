@@ -1,16 +1,15 @@
 use tokio::net::UnixListener;
 use tokio::prelude::*;
 
-mod task_spooler;
-use task_spooler::TaskSpooler;
 use std::cell::{Cell, RefCell};
 use std::borrow::Borrow;
 use std::sync::{Once};
 use config::Source;
 use std::path::PathBuf;
 use std::str::FromStr;
+use crate::connections;
+use crate::task_spooler::TaskSpooler;
 
-mod connections;
 
 fn singleton() -> Box<TaskSpooler> {
     static mut SINGLETON: Option<Box<TaskSpooler>>=None;
@@ -29,8 +28,7 @@ fn singleton() -> Box<TaskSpooler> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+pub async fn run_server() {
     println!("start server");
     let task_spooler= singleton();
     let socket_path = PathBuf::from_str("test.unix").unwrap();

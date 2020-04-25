@@ -1,5 +1,5 @@
 [package]
-name = "task-spooler-rs"
+name = "taskspooler"
 version = "0.1.0"
 authors = ["higumachan <harekumo792154@gmail.com>"]
 edition = "2018"
@@ -7,8 +7,12 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "server"
-path = "src/server.rs"
+name = "server_run"
+path = "src/server_run.rs"
+
+[[bin]]
+name = "server_daemon"
+path = "src/server_daemon.rs"
 
 [[bin]]
 name = "client"
@@ -38,6 +42,7 @@ lazy_static = "^0.2.8"
 dirs = "2.0"
 strum = "0.18.0"
 strum_macros = "0.18.0"
+daemonize = "0.4.1"
 
 
 [build-dependencies]

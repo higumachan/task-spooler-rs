@@ -6,8 +6,9 @@ use crate::connections::client::Client;
 use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-pub mod task_spooler;
-pub mod connections;
+extern crate taskspooler;
+use taskspooler::task_spooler;
+use taskspooler::connections;
 
 
 #[allow(non_camel_case_types)]
@@ -33,6 +34,9 @@ impl FromStr for Command {
 #[tokio::main]
 async fn main() {
     let client = Client::new("test.unix");
+
+    if !client.is_server_starting() {
+    }
 
     let mut subcommand = Command::show_queue;
     let mut args = vec!();
