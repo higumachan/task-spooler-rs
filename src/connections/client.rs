@@ -18,7 +18,6 @@ impl Client {
 
     pub async fn connect(&self) -> tokio::io::Result<UnixStream> {
         UnixStream::connect(&self.socket_path).await
-        //TcpStream::connect("127.0.0.1:7135").await
     }
 
     pub fn is_server_starting(&self) -> bool {
