@@ -105,7 +105,7 @@ async fn enqueue_command(client: &Client, mut args: Vec<String>) {
     }).collect::<ResourceRequirements>();
 
     let command_part = CommandPart::new(program.as_str());
-    let command_part = command_part.args(&program_args);
+    let command_part = command_part.args(program_args.clone());
     let request = connections::types::RequestType::Enqueue(
         command_part,
         None,
@@ -127,9 +127,7 @@ async fn show_queue_command(client: &Client, mut args: Vec<String>) {
 
     println!("id\tstatus    \tcommand          \trequirements\toutput");
     for (status, task) in tasklist {
-        let command_part: Box<dyn std::fmt::Display> = if task.command_part_exec.is_some() {
-            Box::new(task.command_part_exec.unwrap())
-        } else { Box::new(task.command_part_plan) };
+        let command_part = task.command_part;
         let command = format!("{}", command_part);
         let command = truncate_string(&command, 16).unwrap();
         println!("{}\t{:^10}\t{:<12}\t{}\t{}",

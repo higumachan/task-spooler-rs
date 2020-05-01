@@ -3,7 +3,7 @@ use crate::task_spooler::{CommandPart, ResourceRequirements, Argument};
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
 pub enum RequestType {
-    Enqueue(CommandPart<Argument>, Option<i64>, Option<ResourceRequirements>),
+    Enqueue(CommandPart, Option<i64>, Option<ResourceRequirements>),
     UpdateConsumers(),
     ShowQueue(),
 }
