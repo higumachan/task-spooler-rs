@@ -1,6 +1,6 @@
 use std::str::FromStr;
 use argparse::{ArgumentParser, List, Store, StoreOption};
-use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType, Argument};
+use crate::task_spooler::{CommandPart, Task, ResourceRequirements, TaskStatus, ResourceType};
 use crate::connections::types::RequestType;
 use crate::connections::client::Client;
 use std::path::PathBuf;

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::task_spooler::{CommandPart, ResourceRequirements, Argument};
+use crate::task_spooler::{CommandPart, ResourceRequirements};
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug)]
 pub enum RequestType {

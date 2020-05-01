@@ -32,53 +32,6 @@ impl ResourceRequirementsExt for ResourceRequirements {
     }
 }
 
-#[derive(Debug)]
-struct ParseArgumentError;
-
-impl std::fmt::Display for ParseArgumentError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ParseArgumentError")
-    }
-}
-
-impl std::error::Error for ParseArgumentError {
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub enum Argument {
-    Normal(String),
-    Placeholder{resource_type: ResourceType, id: usize},
-}
-
-impl std::fmt::Display for Argument {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Normal(s) => write!(f, "{}", s),
-            Self::Placeholder{ resource_type, id } => write!(f, "{}:{}", resource_type, id)
-        }
-    }
-}
-
-
-impl std::str::FromStr for Argument {
-    type Err = Box<dyn std::error::Error>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(t) = s.chars().nth(0) {
-            if t == '#' {
-                let remain = &s[1..];
-                let kv: Vec<_> = remain.split(":").collect();
-                let resource_type = ResourceType::from_str(kv.get(0).ok_or(ParseArgumentError)?)?;
-                let id = usize::from_str(kv.get(1).ok_or(ParseArgumentError)?)?;
-                Ok(Self::Placeholder{resource_type, id})
-            } else {
-                Ok(Self::Normal(s.to_string()))
-            }
-        } else {
-            Ok(Self::Normal(s.to_string()))
-        }
-    }
-}
 
 trait Error : Send + Clone + Debug {
 }
@@ -95,16 +48,6 @@ impl std::fmt::Display for ResourceNotFoundError {
 impl Error for ResourceNotFoundError {
 }
 
-impl Argument {
-    fn replace_resource(&self, resources: &Resources) -> Result<String, ResourceNotFoundError> {
-        match self {
-            Self::Normal(s) => Ok(s.to_string()),
-            Self::Placeholder{ resource_type, id } =>
-                Ok(resources.get(resource_type).ok_or(ResourceNotFoundError{})?
-                    .get(*id).ok_or(ResourceNotFoundError{})?.to_string())
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct CommandPart {
@@ -471,38 +414,6 @@ mod tests {
         assert_eq!(2, task_spooler.consumers.len());
         assert_eq!(vec![0usize],
                    *task_spooler.consumers[0].read().unwrap().resources.get(&ResourceType::GPU).unwrap());
-    }
-
-    #[test]
-    fn test_replace_argument() {
-        let mut arguments = vec![
-            Argument::Normal("test".to_string()),
-            Argument::Placeholder {resource_type: ResourceType::GPU, id: 0},
-            Argument::Placeholder {resource_type: ResourceType::GPU, id: 1},
-        ];
-        let resource1 = [(ResourceType::GPU, vec![0usize, 1usize])].iter().cloned().collect::<Resources>();
-        let resource2 = [(ResourceType::GPU, vec![1usize, 2usize])].iter().cloned().collect::<Resources>();
-        let resource3 = [].iter().cloned().collect::<Resources>();
-
-        assert_eq!(arguments[0].replace_resource(&resource1).unwrap(), "test");
-        assert_eq!(arguments[1].replace_resource(&resource1).unwrap(), "0");
-        assert_eq!(arguments[2].replace_resource(&resource1).unwrap(), "1");
-
-        assert_eq!(arguments[0].replace_resource(&resource2).unwrap(), "test");
-        assert_eq!(arguments[1].replace_resource(&resource2).unwrap(), "1");
-        assert_eq!(arguments[2].replace_resource(&resource2).unwrap(), "2");
-
-        assert_eq!(arguments[0].replace_resource(&resource3).unwrap(), "test");
-        assert!(arguments[1].replace_resource(&resource3).is_err());
-        assert!(arguments[2].replace_resource(&resource3).is_err());
-    }
-
-    #[test]
-    fn test_parse_arguments() {
-        let s = "nadeko";
-        assert_eq!(Argument::from_str(s).unwrap(), Argument::Normal("nadeko".to_string()));
-        let s = "#GPU:0";
-        assert_eq!(Argument::from_str(s).unwrap(), Argument::Placeholder{resource_type: ResourceType::GPU, id: 0});
     }
 
     #[tokio::test]
