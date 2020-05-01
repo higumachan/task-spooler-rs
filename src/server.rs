@@ -28,15 +28,14 @@ fn singleton() -> Box<TaskSpooler> {
     }
 }
 
-pub async fn run_server() {
-    println!("start server");
+pub async fn run_server(socket_path: &str) {
     let task_spooler= singleton();
-    let socket_path = PathBuf::from_str("test.unix").unwrap();
+    let socket_path = PathBuf::from_str(socket_path).unwrap();
     tokio::join!(task_spooler.run(), server_loop(&socket_path));
 }
 
 async fn server_loop(socket_path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let mut listener = UnixListener::bind(socket_path)?;
+    let mut listener = UnixListener::bind(socket_path).unwrap();
 
     loop {
         let (mut socket, _) = listener.accept().await?;

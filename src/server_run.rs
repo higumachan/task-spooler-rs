@@ -5,5 +5,5 @@ use taskspooler::server;
 
 #[tokio::main]
 async fn main() {
-    server::run_server().await;
+    server::run_server("test.unix").await;
 }

@@ -5,10 +5,17 @@ use crate::connections::types::RequestType;
 use crate::connections::client::Client;
 use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::time::{delay_for};
 
 extern crate taskspooler;
 use taskspooler::task_spooler;
 use taskspooler::connections;
+use daemonize::Daemonize;
+use taskspooler::server::run_server;
+use std::fs::File;
+use users::get_current_uid;
+use std::env::current_exe;
+use std::time::Duration;
 
 
 #[allow(non_camel_case_types)]
@@ -33,9 +40,11 @@ impl FromStr for Command {
 
 #[tokio::main]
 async fn main() {
-    let client = Client::new("test.unix");
+    let socket_path = "/tmp/tsp.unix";
+    let client = Client::new("/tmp/tsp.pid", socket_path);
 
     if !client.is_server_starting() {
+        start_server_daemon(socket_path, &client).await.unwrap();
     }
 
     let mut subcommand = Command::show_queue;
@@ -112,7 +121,7 @@ async fn show_queue_command(client: &Client, mut args: Vec<String>) {
     let bytes = bincode::serialize(&RequestType::ShowQueue()).unwrap();
     let mut stream = client.connect().await.expect("connection fail");
     stream.write(&bytes).await.unwrap();
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).await.unwrap();
     let tasklist: Vec<(TaskStatus, Task)> = bincode::deserialize(&buf[0..n]).unwrap();
 
@@ -151,4 +160,24 @@ fn format_resource(requirements: &ResourceRequirements) -> String {
         res.extend(format!("{}:{} ", k, v).chars());
     }
     res
+}
+
+async fn start_server_daemon(socket_path: &str, client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+    let current_exe_path = current_exe()?;
+    let server_daemon_path = current_exe_path.parent().unwrap().join("server_daemon");
+
+    let mut command = std::process::Command::new(server_daemon_path);
+    command.args(&[socket_path]);
+
+    let status = command.status()?;
+
+    let mut i = 0usize;
+    while client.connect().await.is_err() && i < 10 {
+        delay_for(Duration::from_millis(500)).await;
+        i += 1
+    }
+
+    let _ = client.connect().await?;
+
+    Ok(())
 }

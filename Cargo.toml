@@ -43,6 +43,7 @@ dirs = "2.0"
 strum = "0.18.0"
 strum_macros = "0.18.0"
 daemonize = "0.4.1"
+users = "0.10.0"
 
 
 [build-dependencies]
