@@ -16,6 +16,9 @@ use serde::de::DeserializeOwned;
 use std::fmt::{Debug};
 use std::fs::{read_to_string, File};
 use std::panic::resume_unwind;
+use std::mem::replace;
+use std::borrow::BorrowMut;
+use std::ops::DerefMut;
 
 
 pub type Resources = HashMap<ResourceType, Vec<usize>>;
@@ -148,6 +151,19 @@ impl Task {
         let status = command.status().await.unwrap();
         self.return_code = Some(status.code().unwrap());
     }
+
+    pub async fn run_rwlock(self_: &RwLock<Option<Self>>, resources: &Resources) {
+        self_.write().unwrap().as_mut().unwrap().prepare();
+
+        let mut command = self_.read().unwrap().as_ref().unwrap().command_part.to_command(resources);
+        command.envs(resources_to_envs(resources));
+
+        let f = File::create(&self_.read().unwrap().as_ref().unwrap().output_filepath.as_ref().unwrap()).unwrap();
+        command.stdout(f);
+        let status = command.status().await.unwrap();
+        self_.write().unwrap().as_mut().unwrap().return_code = Some(status.code().unwrap());
+    }
+
     fn try_set_error<T>(&mut self, r: Result<T, ResourceNotFoundError>) -> Option<T> {
         if let Err(e) = r {
             self.error = Some(e);
@@ -234,7 +250,7 @@ pub enum ResourceType {
 
 pub struct Consumer {
     resources: HashMap<ResourceType, Vec<usize>>,
-    processing: Option<Task>,
+    processing: Arc<RwLock<Option<Task>>>,
 }
 
 impl Default for Consumer {
@@ -245,7 +261,7 @@ impl Default for Consumer {
 
         Self {
             resources,
-            processing: None,
+            processing: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -254,22 +270,21 @@ impl Consumer {
     pub fn new(resources: Resources) -> Self {
         Self {
             resources,
-            processing: None,
+            processing: Arc::new(RwLock::new(None)),
         }
     }
-    async fn consume(self_: &RwLock<Self>, task_queue: &Arc<RwLock<TaskQueue>>) {
+    async fn consume(&self, task_queue: &Arc<RwLock<TaskQueue>>) {
         loop {
             let mut task: Option<Task> = None;
             while task.is_none() {
-                task = task_queue.write().unwrap().dequeue_with_constraints(&self_.read().unwrap().resources);
-                delay_for(Duration::from_millis(100)).await;
+                task = task_queue.write().unwrap().dequeue_with_constraints(&self.resources);
+                delay_for(Duration::from_millis(10)).await;
             }
             let mut run_task = task.unwrap();
-            run_task.prepare();
-            self_.write().unwrap().processing = Some(run_task.clone());
-            run_task.run(&self_.read().unwrap().resources.clone()).await;
-            task_queue.write().unwrap().finished.push(run_task);
-            self_.write().unwrap().processing = None;
+            self.processing.write().unwrap().replace(run_task);
+            Task::run_rwlock(&self.processing, &self.resources).await;
+            let task: Option<Task> = replace(self.processing.write().unwrap().deref_mut(), None);
+            task_queue.write().unwrap().finished.push(task.unwrap());
         }
     }
 
@@ -285,7 +300,7 @@ impl Consumer {
 
 #[derive(Clone)]
 pub struct TaskSpooler {
-    consumers: Arc<Vec<RwLock<Consumer>>>,
+    consumers: Arc<Vec<Consumer>>,
     pub task_queue: Arc<RwLock<TaskQueue>>,
 }
 
@@ -299,7 +314,7 @@ pub enum TaskStatus {
 impl Default for TaskSpooler {
     fn default() -> Self {
         TaskSpooler {
-            consumers: Arc::new(vec![RwLock::new(Consumer::default())]),
+            consumers: Arc::new(vec![Consumer::default()]),
             task_queue: Arc::new(RwLock::new(TaskQueue::default())),
         }
     }
@@ -318,11 +333,11 @@ impl TaskSpooler {
                 let resources = t.keys()
                     .map(|rname| ResourceType::from_str(rname.as_str()).unwrap())
                     .zip(t.values().map(|x| x.clone().into_array().unwrap().iter().map(|y| y.clone().into_int().unwrap() as usize).collect())).collect::<HashMap<_, _>>();
-                consumers.push(RwLock::new(Consumer::new(resources)));
+                consumers.push(Consumer::new(resources));
             }
             consumers
         } else {
-            vec![RwLock::new(Consumer::default())]
+            vec![Consumer::default()]
         };
         TaskSpooler {
             consumers: Arc::new(consumers),
@@ -330,12 +345,12 @@ impl TaskSpooler {
         }
     }
     pub async fn run(&self) {
-        join_all(self.consumers.iter().map(|x| Consumer::consume(x, &self.task_queue))).await;
+        join_all(self.consumers.iter().map(|x| x.consume(&self.task_queue))).await;
     }
 
     pub fn task_list(&self) -> Vec<(TaskStatus, Task)> {
         let mut tasks: Vec<(TaskStatus, Task)> = vec![];
-        let processing: Vec<Task> = self.consumers.iter().filter_map(|x| x.read().unwrap().processing.clone()).collect();
+        let processing: Vec<Task> = self.consumers.iter().filter_map(|x| x.processing.read().unwrap().clone()).collect();
         tasks.extend(processing.into_iter().map(|x| (TaskStatus::Processing, x)));
         tasks.extend(self.task_queue.read().unwrap().waiting
             .clone().into_iter().map(|x| (TaskStatus::Waiting, x)));
@@ -413,7 +428,7 @@ mod tests {
 
         assert_eq!(2, task_spooler.consumers.len());
         assert_eq!(vec![0usize],
-                   *task_spooler.consumers[0].read().unwrap().resources.get(&ResourceType::GPU).unwrap());
+                   *task_spooler.consumers[0].resources.get(&ResourceType::GPU).unwrap());
     }
 
     #[tokio::test]
@@ -421,7 +436,7 @@ mod tests {
         let mut consumer = Consumer::default();
         let tq = TaskQueue::default();
 
-        let r = timeout(Duration::from_millis(10), Consumer::consume(&RwLock::new(consumer), &Arc::new(RwLock::new(tq)))).await;
+        let r = timeout(Duration::from_millis(10), consumer.consume(&Arc::new(RwLock::new(tq)))).await;
 
         assert!(r.is_err());
     }
@@ -488,7 +503,8 @@ mod tests {
             tokio::select! {
                 _ = &mut delay1 => {
                     d1.call_once(|| {
-                        assert!(tsp.consumers[0].read().unwrap().processing.as_ref().unwrap().output_filepath.is_some());
+                        let p = tsp.consumers[0].processing.read().unwrap();
+                        assert!(p.as_ref().unwrap().output_filepath.is_some());
                         assert_eq!(tsp.task_queue.read().unwrap().waiting.len(), 1);
                         assert_eq!(tsp.task_queue.read().unwrap().finished.len(), 0);
                         assert_eq!(tsp.task_list().len(), 2);
