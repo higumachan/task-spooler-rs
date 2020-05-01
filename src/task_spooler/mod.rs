@@ -134,9 +134,31 @@ impl CommandPart {
         }
     }
 
-    pub fn to_command(&self) -> Command {
+    pub fn to_command(&self, resources: &Resources) -> Command {
         let mut com = Command::new(&self.program);
-        com.args(&self.arguments);
+        let arguments: Vec<String> = self.arguments
+            .clone()
+            .into_iter()
+            .map(|x| {
+                if x.starts_with("$") {
+                    let x = &x[1..];
+                    for (k, v) in resources {
+                        let ks = k.to_string();
+                        if x.starts_with(&ks) {
+                            let l = &x[ks.len()..];
+                            if let Ok(l) = usize::from_str(l) {
+                                return v[l].to_string();
+                            }
+                            else {
+                                return v[0].to_string();
+                            }
+                        }
+                    }
+                }
+                x
+            }).collect()
+        ;
+        com.args(&arguments);
         com
     }
 }
@@ -175,7 +197,7 @@ impl Task {
         if self.error.is_some() {
             return;
         }
-        let mut command = self.command_part.to_command();
+        let mut command = self.command_part.to_command(resources);
         command.envs(resources_to_envs(resources));
 
         let f = File::create(&self.output_filepath.as_ref().unwrap()).unwrap();
@@ -390,6 +412,7 @@ mod tests {
     use std::io::Read;
     use std::str::from_utf8;
     use futures::StreamExt;
+    use crate::server::run_server;
 
     impl Default for CommandPart
     {
@@ -502,52 +525,31 @@ mod tests {
         let cp = CommandPart::new("cargo").args(vec!(
             "run".to_string(), "--bin".to_string(), "helloworld".to_string()
         ));
-        let mut task = Task::new(
-            1,
-            cp,
-            1,
-            ResourceRequirements::new(),
-        );
+        let result = run_command_with_task(cp, Box::new(|task, resources| {
+            resources.insert(ResourceType::GPU, vec![1, 2]);
+        })).await;
 
-        let resources = Resources::new();
-        task.prepare();
-        task.run(&resources).await;
-
-        assert_eq!(task.return_code.unwrap(), 0);
-        assert!(task.output_filepath.is_some());
-        let output_filepath = task.output_filepath.unwrap();
-        let mut file = File::open(output_filepath).unwrap();
-        let mut buf = [0; 1024];
-        let n = file.read(&mut buf).unwrap();
-        let result = from_utf8(&buf[0..n]).unwrap();
         assert_eq!("helloworld\n", result);
     }
+
 
     #[tokio::test]
     async fn test_task_run_with_env() {
         let cp = CommandPart::new("printenv");
-        let mut task = Task::new(
-            1,
-            cp,
-            1,
-            ResourceRequirements::new(),
-        );
+        let result = run_command_with_task(cp, Box::new(|task, resources| {
+            resources.insert(ResourceType::GPU, vec![1, 2]);
+        })).await;
 
-        let mut resources = Resources::new();
-        resources.insert(ResourceType::GPU, vec![1, 2]);
-        task.prepare();
-        task.run(&resources).await;
-
-        assert_eq!(task.return_code.unwrap(), 0);
-        assert!(task.output_filepath.is_some());
-        let output_filepath = task.output_filepath.unwrap();
-        let mut file = File::open(output_filepath).unwrap();
-        let mut buf = [0; 1024];
-        let n = file.read(&mut buf).unwrap();
-        let result = from_utf8(&buf[0..n]).unwrap();
         assert!(result.contains("GPU=1"));
         assert!(result.contains("GPU0=1"));
         assert!(result.contains("GPU1=2"));
+
+        let cp = CommandPart::new("echo").args(vec!["$GPU".to_string()]);
+        let result = run_command_with_task(cp, Box::new(|task, resources| {
+            resources.insert(ResourceType::GPU, vec![1, 2]);
+        })).await;
+
+        assert_eq!("1\n", result);
     }
 
     #[tokio::test]
@@ -595,5 +597,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    async fn run_command_with_task(command: CommandPart, f: Box<dyn FnOnce(&mut Task, &mut Resources)>) -> String {
+        let cp = command;
+        let mut task = Task::new(
+            1,
+            cp,
+            1,
+            ResourceRequirements::new(),
+        );
+        let mut resources = Resources::new();
+
+        f(&mut task, &mut resources);
+
+        task.prepare();
+        task.run(&resources).await;
+
+        assert_eq!(task.return_code.unwrap(), 0);
+        assert!(task.output_filepath.is_some());
+        let output_filepath = task.output_filepath.unwrap();
+        let mut file = File::open(output_filepath).unwrap();
+        let mut buf = [0; 1024];
+        let n = file.read(&mut buf).unwrap();
+        from_utf8(&buf[0..n]).unwrap().to_string()
     }
 }
